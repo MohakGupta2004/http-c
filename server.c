@@ -1,12 +1,29 @@
-#include<stdio.h>
+
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include<errno.h>
-#include<string.h>
-#include<stdlib.h>
-#include<unistd.h>
-int main(){
-  /*
+#include <netinet/ip.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+
+/*
+ * Function to extract the path from the HTTP request.
+ * It finds the first space, then the next space, and extracts the content between them.
+ */
+void extract_path(const char *request, char* path){
+  char *start = strchr(request, ' ');
+  start++;
+  
+  char* end = strchr(start, ' ');
+  size_t len = end - start;
+  strncpy(path,start,len);
+  path[len] = '\0';
+}
+
+int main() {
+   /*
    * what setbuf does is that default stdout prints the value when a 
    * \n line occured, otherwise it'll store it in buffer and print it
    * at the end. To solve this (more of like JS interpreter kinda work)
@@ -17,28 +34,29 @@ int main(){
    *
    * strerror = Strerror turns a error code into human readable format.
    * */
-  setbuf(stderr, NULL);
-  setbuf(stdout, NULL);
+ 
+	setbuf(stdout, NULL);
+ 	setbuf(stderr, NULL);
+  char request[1024];
+	// Debugging log
+	printf("Logs from your program will appear here!\n");
+ 
+	int server_fd, client_addr_len;
+	struct sockaddr_in client_addr;
 
-  /*
-   * server_fd means server file descriptor which is used for making sure that the socket is working
-   * or not.
-   * client_addr_len means client address length = 
-   * client_addr = This holds the properties of the client address. 
-   * AF_INET = Address family IPv4. 
-   * SOCK_STREAM = For TCP connection.
-   *
-   * server_fd often returns -1 as an error.
-   * */ 
-  int server_fd, client_addr_len;
-  struct sockaddr_in client_addr;
-  server_fd = socket(AF_INET, SOCK_STREAM, 0); 
-  if(server_fd == -1){
-    printf("Socket connection failed. %s", strerror(errno));
-    return 1;
-  }
-  
-  /*
+	/*
+	 * Creating a socket using socket() function
+	 * server_fd stores the file descriptor for the server socket.
+	 * AF_INET specifies IPv4, SOCK_STREAM specifies TCP.
+	 * Returns -1 on failure.
+	 */
+	server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (server_fd == -1) {
+		printf("Socket creation failed: %s...\n", strerror(errno));
+		return 1;
+	}
+
+	 /*
    * setsockopt is used for reusing the port which was recently closed. Basically when we stop a server on a
    * port, the os doesn't immedietly give us the permission to reuse the port. We have to make that start manually.
    *
@@ -48,14 +66,13 @@ int main(){
    * setsockopt(file descriptor where the socket is initialized, socket level or SOL_SOCKET, reuse address, reuse variable as an address, size of reuse
    * ) and if this value is 0 then it's an success.
    * */
+	int reuse = 1;
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+		printf("SO_REUSEADDR failed: %s \n", strerror(errno));
+		return 1;
+	}
 
-  int reuse = 1;
-  if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse))<0){
-    printf("Process failed, %s", strerror(errno));
-    return 1;
-  }
-
-  /*
+	  /*
    * sockaddr_in server_addr create a sockaddr_in(IPv4) structure datatype which has these values = 
    * struct sockaddr_in {
    *       sa_family_t     sin_family;     AF_INET 
@@ -77,37 +94,77 @@ int main(){
    * why typecasting not directly sockaddr? Because sockaddr has less properties inside it. which in sockaddr_in hasn't. So 
    * for limited info sharing we use sockaddr which is general purpose.
    * */
-
-  struct sockaddr_in server_addr;
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(4221);
-  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-  if(bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr))!=0){
-    printf("Binding failed, %s", strerror(errno)); 
-    return 1;
-  }
+	struct sockaddr_in serv_addr = { .sin_family = AF_INET ,
+							 .sin_port = htons(4221),
+							 .sin_addr = { htonl(INADDR_ANY) },
+						};
 
   /*
    * Connection Backlog is the capacity of clients a server can handle,
    * listen(socket file descriptor, connection_backlog) if listen is 0 then it's working
    * */
-  int connection_backlog = 5;
-  if(listen(server_fd, connection_backlog) != 0){
-    printf("Connection Full, %s", strerror(errno));
-    return 1;
-  }
+	if (bind(server_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0) {
+		printf("Bind failed: %s \n", strerror(errno));
+		return 1;
+	}
 
+	/*
+	 * Setting up the socket to listen for incoming connections.
+	 */
+	int connection_backlog = 5;
+	if (listen(server_fd, connection_backlog) != 0) {
+		printf("Listen failed: %s \n", strerror(errno));
+		return 1;
+	}
+
+	printf("Waiting for a client to connect...\n");
+	client_addr_len = sizeof(client_addr);
+  
+  char *response_ok = "HTTP/1.1 200 OK\r\n\r\n";
+  char *response_error = "HTTP/1.1 404 Not Found\r\n\r\n";
+  
   /*
-   * Just like the bind function accept function accepts file descriptor, general purpose client address and address value
-   * of the size of the client_addr(because it's struct).
-   * */
-  client_addr_len = sizeof(client_addr);
-  if(accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len)<0){
-    printf("Can't able to accept Client, %s\n", strerror(errno));
-    return 1;
+   * Accepting a client connection.
+   */
+  int client = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+	char path[1024];
+  if(client>0){
+    memset(request, 0, 1024);
+    read(client, request, 1024);
+    
+    /*
+     * Checking if the request is "GET / ".
+     */
+    if(strncmp(request, "GET / ", 6) == 0){
+     send(client, response_ok, strlen(response_ok), 0);
+    } else {
+      extract_path(request, path);
+      
+      char *token = strtok(path, "/");
+      /*
+       * If the request is for echo, extract the message.
+       */
+      if(strcmp(token,"echo")==0){
+        token = strtok(NULL, "/");
+        char response[1024];
+        snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\n"
+               "Content-Type: text/plain\r\n"
+               "Content-Length: %zu\r\n"
+               "\r\n"
+               "%s", strlen(token), token);
+        send(client, response, sizeof(response), 0);
+      }else {
+        send(client, response_error, strlen(response_error), 0);
+      }
+    }
   }
+	printf("Client connected\n");
 
-  printf("Client Connected\n"); 
-  close(server_fd);
+	/*
+	 * Closing the server socket.
+	 */
+	close(server_fd);
+
+	return 0;
 }
+
